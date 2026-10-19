@@ -129,7 +129,7 @@ namespace EndfieldSteamBridge
         {
             Directory.CreateDirectory(Path.GetDirectoryName(target));
             string temp = target + ".esb-tmp"; File.Copy(source, temp, true);
-            if (File.Exists(target)) File.Replace(temp, target, null); else File.Move(temp, target);
+            if (File.Exists(target)) App.Replace(temp, target); else File.Move(temp, target);
         }
         private void ValidateState(Installation state)
         {
@@ -174,7 +174,7 @@ namespace EndfieldSteamBridge
         {
             EnableMany(new[] { scan }, progress);
         }
-        public static void EnableMany(DetectionResult[] scans, Action<string> progress)
+        public static void EnableMany(DetectionResult[] scans, Action<string> progress, Action assertIdle = null)
         {
             if (scans.Length == 0) return;
             var metadata = new Dictionary<string, Metadata>();
@@ -206,6 +206,7 @@ namespace EndfieldSteamBridge
                     throw new IOException("Steam 默认入口需要真实启动文件，请先确认官方启动器/客户端路径。");
                 FindManifest(steam, profile); EnsureGameClosed(profile, scan.LaunchMethod);
             }
+            if (assertIdle != null) assertIdle();
             progress("正在正常退出 Steam…"); StopSteam(steam);
             var completed = new List<string>();
             try
@@ -261,7 +262,8 @@ namespace EndfieldSteamBridge
                 GameId = GameProfile.Get(scan.GameId).Id, ChannelId = scan.ChannelId,
                 LaunchMethod = LaunchMethod.Normalize(scan.LaunchMethod),
                 Launcher = String.IsNullOrEmpty(scan.Launcher) ? null : Path.GetFullPath(scan.Launcher),
-                QaqrPath = scan.QaqrPath, QaqrUserData = scan.QaqrUserData,
+                QaqrPath = scan.QaqrPath, QaqrUserData = scan.QaqrUserData, QaqrSteamManaged = scan.QaqrSteamManaged,
+                AutoSync = scan.AutoSync,
                 Game = Path.GetFullPath(scan.Game), SteamRoot = scan.SteamRoot, TaskName = taskName
             };
         }
@@ -300,7 +302,7 @@ namespace EndfieldSteamBridge
             try { string name = System.Reflection.AssemblyName.GetAssemblyName(exe).Name; return name == "EndfieldCNV3" || name == "EndfieldCNV2" || name == "EndfieldCN"; }
             catch (BadImageFormatException) { return false; }
         }
-        private static void EnsureGameClosed(GameProfile profile, string method)
+        internal static void EnsureGameClosed(GameProfile profile, string method)
         {
             foreach (var p in Process.GetProcessesByName("steam-bridge")) using (p)
                 if (p.Id != Process.GetCurrentProcess().Id && Detection.Same(BridgeRuntime.ImagePath(p.Id), profile.RuntimeExe))
@@ -329,8 +331,9 @@ namespace EndfieldSteamBridge
         { Process.Start(new ProcessStartInfo(Path.Combine(steam, "steam.exe"), "") { UseShellExecute = true }); }
         private static void RegisterTask(GameProfile profile)
         {
+            // Queue the normal session assistant if Steam relaunches before a repair assistant exits.
             string sid = System.Security.Principal.WindowsIdentity.GetCurrent().User.Value;
-            string xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><RegistrationInfo><Description>Steam Bridge: " + profile.SteamName + " session cleanup.</Description></RegistrationInfo><Triggers/><Principals><Principal id=\"Author\"><UserId>" + sid + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings><Actions Context=\"Author\"><Exec><Command>" + SecurityElement.Escape(profile.RuntimeExe) + "</Command><Arguments>--assist " + profile.Id + "</Arguments><WorkingDirectory>" + SecurityElement.Escape(profile.Home) + "</WorkingDirectory></Exec></Actions></Task>";
+            string xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><RegistrationInfo><Description>Steam Bridge: " + profile.SteamName + " session cleanup.</Description></RegistrationInfo><Triggers/><Principals><Principal id=\"Author\"><UserId>" + sid + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>Queue</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings><Actions Context=\"Author\"><Exec><Command>" + SecurityElement.Escape(profile.RuntimeExe) + "</Command><Arguments>--assist " + profile.Id + "</Arguments><WorkingDirectory>" + SecurityElement.Escape(profile.Home) + "</WorkingDirectory></Exec></Actions></Task>";
             string file = Path.Combine(profile.Home, "task.xml"); File.WriteAllText(file, xml, Encoding.Unicode);
             try { RunTaskCommand("/create /tn " + Arguments.Quote(profile.TaskName) + " /xml " + Arguments.Quote(file) + " /f", false); }
             finally { if (File.Exists(file)) File.Delete(file); }

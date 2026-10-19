@@ -12,6 +12,9 @@ try {
     New-Item -ItemType Directory -Path $binary,$source | Out-Null
     Copy-Item -LiteralPath (Join-Path $dist 'steam-bridge.exe') -Destination $binary
     foreach ($name in @('README.md','LICENSE')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $binary }
+    $binaryAssets = Join-Path $binary 'assets'
+    New-Item -ItemType Directory -Path $binaryAssets | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'assets\icon.png') -Destination $binaryAssets
     foreach ($name in @('src','tests','assets','app.manifest','build.ps1','test.ps1','test-ui.ps1','package.ps1','README.md','LICENSE','.gitignore','EndfieldSteamBridge.csproj')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $source -Recurse
     }

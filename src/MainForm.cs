@@ -15,6 +15,7 @@ namespace EndfieldSteamBridge
         private Label account, client, installed, status, headline;
         private ComboBox server, launchMethod;
         private TextBox launcher, game, qaqr;
+        private CheckBox qaqrSteamManaged;
         private FluentButton enable, enableBoth, restore, refresh, chooseLauncher, chooseGame, chooseQaqr;
         private FluentBadge accountBadge, bridgeBadge;
         private FluentCard launchCard, notice;
@@ -34,19 +35,19 @@ namespace EndfieldSteamBridge
         public MainForm()
         {
             SuspendLayout();
+            AutoScaleMode = AutoScaleMode.None;
             DoubleBuffered = true; ResizeRedraw = true;
             Text = "steam-bridge";
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             Font = FluentTheme.Font(10);
             ForeColor = FluentTheme.Ink; BackColor = FluentTheme.Canvas;
-            AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(1040, 740); MinimumSize = new Size(920, 640);
             var shell = new FluentPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
             shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 224));
             shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            Controls.Add(shell); shell.Controls.Add(BuildNavigation(), 0, 0);
+            shell.Controls.Add(BuildNavigation(), 0, 0);
 
             var body = new FluentPanel { Dock = DockStyle.Fill, Padding = new Padding(20, 18, 24, 12), Margin = new Padding(0, 8, 8, 8), ColumnCount = 1, RowCount = 3 };
             body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -112,6 +113,12 @@ namespace EndfieldSteamBridge
                 UpdateLaunchLayout();
                 if (!busy) { game.Clear(); await RefreshDetection(); }
             };
+            qaqrSteamManaged.CheckedChanged += delegate
+            {
+                if (busy || current == null || current.QaqrSteamManaged == qaqrSteamManaged.Checked) return;
+                current.QaqrSteamManaged = qaqrSteamManaged.Checked;
+                Populate();
+            };
             server.SelectedIndexChanged += async delegate
             {
                 if (busy) return;
@@ -125,6 +132,10 @@ namespace EndfieldSteamBridge
             Shown += async delegate { if (!previewRendering) await RefreshDetection(); };
             FormClosing += delegate(object s, FormClosingEventArgs e) { if (busy) { e.Cancel = true; status.Text = "正在处理，请等待当前操作完成。"; } };
             UpdateGameHeading(); UpdateLaunchLayout(); SetBusy(true);
+            // Attach the complete tree before the single DPI scaling pass. Adding controls
+            // to an already DPI-scaled form scales nested table rows a second time.
+            Controls.Add(shell);
+            AutoScaleMode = AutoScaleMode.Dpi; AutoScaleDimensions = new SizeF(96, 96);
             ResumeLayout(true);
         }
 
@@ -199,9 +210,9 @@ namespace EndfieldSteamBridge
 
         private Control BuildLaunchCard()
         {
-            launchCard = new FluentCard { Name = "LaunchSettingsCard", Dock = DockStyle.Top, Height = 234, Padding = new Padding(16, 12, 16, 12), ColumnCount = 1, RowCount = 6, Margin = new Padding(0, 0, 0, 6) };
+            launchCard = new FluentCard { Name = "LaunchSettingsCard", Dock = DockStyle.Top, Height = 234, Padding = new Padding(16, 12, 16, 12), ColumnCount = 1, RowCount = 7, Margin = new Padding(0, 0, 0, 6) };
             launchCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            foreach (int height in new[] { 32, 70, 28, 40, 0, 40 }) launchCard.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+            foreach (int height in new[] { 32, 70, 28, 40, 0, 0, 40 }) launchCard.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
             launchCard.Controls.Add(MakeLabel("启动设置", 11, FluentTheme.Ink), 0, 0);
             var options = new FluentPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Margin = new Padding(0, 0, 0, 8) };
             options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44)); options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
@@ -212,9 +223,11 @@ namespace EndfieldSteamBridge
             server.Items.AddRange(GameChannel.All); server.SelectedItem = GameChannel.Official;
             launchMethod = new FluentComboBox { Name = "LaunchMethod", Dock = DockStyle.Top, Margin = Padding.Empty, AccessibleName = "启动方式" };
             launchMethod.Items.AddRange(new object[] { "官方启动器", "QAQR（Mod 管理器）" }); launchMethod.SelectedIndex = 0;
+            qaqrSteamManaged = new CheckBox { Name = "QaqrSteamManaged", Text = "由 Steam 管理 QAQR（传递覆盖层）", AccessibleName = "由 Steam 管理 QAQR", Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Color.Transparent, ForeColor = FluentTheme.Ink, Font = FluentTheme.Font(9.5f), UseVisualStyleBackColor = true };
+            tips.SetToolTip(qaqrSteamManaged, "开启：请先退出已有 QAQR；Steam 会管理本次 QAQR 与其启动的游戏，QAQR 未退出时会继续计时。关闭：仅记录所选游戏时长，保留独立运行的 QAQR。");
             if (File.Exists(App.ConfigPath))
             {
-                try { var config = App.Load<RuntimeConfig>(App.ConfigPath); server.SelectedItem = GameChannel.Get(config.ChannelId); launchMethod.SelectedIndex = LaunchMethod.Normalize(config.LaunchMethod) == LaunchMethod.Qaqr ? 1 : 0; }
+                try { var config = App.Load<RuntimeConfig>(App.ConfigPath); server.SelectedItem = GameChannel.Get(config.ChannelId); launchMethod.SelectedIndex = LaunchMethod.Normalize(config.LaunchMethod) == LaunchMethod.Qaqr ? 1 : 0; qaqrSteamManaged.Checked = config.QaqrSteamManaged; }
                 catch (Exception) { /* Normal detection reports an unreadable existing config. */ }
             }
             options.Controls.Add(server, 0, 1); options.Controls.Add(launchMethod, 1, 1); launchCard.Controls.Add(options, 0, 1);
@@ -222,7 +235,8 @@ namespace EndfieldSteamBridge
             client.TextChanged += delegate { tips.SetToolTip(client, client.Text); };
             launchCard.Controls.Add(PathRow("官方启动器", "LauncherPath", out launcher, out chooseLauncher), 0, 3);
             qaqrRow = PathRow("QAQR", "QaqrPath", out qaqr, out chooseQaqr); launchCard.Controls.Add(qaqrRow, 0, 4);
-            launchCard.Controls.Add(PathRow("游戏客户端", "GamePath", out game, out chooseGame), 0, 5);
+            launchCard.Controls.Add(qaqrSteamManaged, 0, 5);
+            launchCard.Controls.Add(PathRow("游戏客户端", "GamePath", out game, out chooseGame), 0, 6);
             return launchCard;
         }
 
@@ -264,7 +278,8 @@ namespace EndfieldSteamBridge
             bool useQaqr = SelectedMethod == LaunchMethod.Qaqr;
             launchCard.SuspendLayout();
             qaqrRow.Visible = useQaqr; launchCard.RowStyles[4].Height = FluentTheme.Px(this, useQaqr ? 40 : 0);
-            launchCard.Height = FluentTheme.Px(this, useQaqr ? 274 : 234);
+            qaqrSteamManaged.Visible = useQaqr; launchCard.RowStyles[5].Height = FluentTheme.Px(this, useQaqr ? 32 : 0);
+            launchCard.Height = FluentTheme.Px(this, useQaqr ? 306 : 234);
             launchCard.ResumeLayout(true);
         }
 
@@ -281,6 +296,7 @@ namespace EndfieldSteamBridge
             DetectionResult saved; scans.TryGetValue(profile.Id, out saved);
             server.SelectedItem = GameChannel.Get(saved == null ? null : saved.ChannelId);
             launchMethod.SelectedIndex = saved != null && LaunchMethod.Normalize(saved.LaunchMethod) == LaunchMethod.Qaqr ? 1 : 0;
+            qaqrSteamManaged.Checked = saved != null && saved.QaqrSteamManaged;
             qaqr.Text = saved == null ? "" : saved.QaqrPath;
             launcher.Text = saved == null ? "" : saved.Launcher; game.Text = saved == null ? "" : saved.Game;
             scroll.AutoScrollPosition = Point.Empty;
@@ -298,7 +314,7 @@ namespace EndfieldSteamBridge
             busy = value;
             refresh.Enabled = chooseLauncher.Enabled = chooseGame.Enabled = launchMethod.Enabled = !value;
             foreach (var button in navigation.Values) button.Enabled = !value;
-            chooseQaqr.Enabled = qaqr.Enabled = !value && SelectedMethod == LaunchMethod.Qaqr;
+            chooseQaqr.Enabled = qaqr.Enabled = qaqrSteamManaged.Enabled = !value && SelectedMethod == LaunchMethod.Qaqr;
             server.Enabled = !value && SelectedGame == GameProfile.Endfield;
             bool stateExists = File.Exists(SelectedGame.StatePath);
             enable.Enabled = !value && Ready(current);
@@ -314,14 +330,15 @@ namespace EndfieldSteamBridge
             string channelId = ((GameChannel)server.SelectedItem).Id;
             var profile = SelectedGame;
             string method = SelectedMethod, q = String.IsNullOrWhiteSpace(qaqr.Text) ? null : qaqr.Text;
+            bool managed = qaqrSteamManaged.Checked;
             DetectionResult previous; scans.TryGetValue(profile.Id, out previous);
             try
             {
-                current = await Task.Run(() => Detection.Scan(l, g, channelId, profile.Id, method, q, previous == null ? null : previous.QaqrUserData)); scans[profile.Id] = current;
+                current = await Task.Run(() => Detection.Scan(l, g, channelId, profile.Id, method, q, previous == null ? null : previous.QaqrUserData, managed)); scans[profile.Id] = current;
                 foreach (var other in GameProfile.All.Where(p => p != profile))
                 {
                     DetectionResult saved; scans.TryGetValue(other.Id, out saved);
-                    scans[other.Id] = await Task.Run(() => Detection.Scan(saved == null ? null : saved.Launcher, saved == null ? null : saved.Game, saved == null ? null : saved.ChannelId, other.Id, saved == null ? null : saved.LaunchMethod, saved == null ? null : saved.QaqrPath, saved == null ? null : saved.QaqrUserData));
+                    scans[other.Id] = await Task.Run(() => Detection.Scan(saved == null ? null : saved.Launcher, saved == null ? null : saved.Game, saved == null ? null : saved.ChannelId, other.Id, saved == null ? null : saved.LaunchMethod, saved == null ? null : saved.QaqrPath, saved == null ? null : saved.QaqrUserData, saved == null ? (bool?)null : saved.QaqrSteamManaged));
                 }
                 Populate();
             }
@@ -338,6 +355,7 @@ namespace EndfieldSteamBridge
             accountBadge.Text = owned ? "已入库" : "待检查"; accountBadge.Success = owned;
             launcher.Text = current.Launcher ?? launcher.Text; game.Text = current.Game ?? game.Text;
             qaqr.Text = current.QaqrPath ?? qaqr.Text;
+            qaqrSteamManaged.Checked = current.QaqrSteamManaged;
             client.Text = current.GameStatus ?? "等待 Steam 检测完成";
             client.ForeColor = current.ClientReady ? FluentTheme.Success : FluentTheme.Muted;
             var state = current.Installation;
@@ -347,7 +365,10 @@ namespace EndfieldSteamBridge
             enable.Text = state == null ? "设置当前游戏" : "应用设置 / 同步版本";
             status.Text = current.Error ?? (a == null || !a.Known ? "请确认 Steam 已在线登录，再点击“重新检测”。" : !a.Owned ? "请先在 Steam 商店将 " + profile.SteamName + " 免费添加入库，再重新检测。" : "设置、同步或撤回会退出并重启 Steam，请先关闭游戏与启动器。\nSteam 需以管理员身份运行；两款均就绪后，可一键设置。");
             if (SelectedMethod == LaunchMethod.Qaqr)
-                status.Text = "QAQR：请手动选择" + profile.Name + "并开始游戏。此模式仅记录时长，不支持 Steam 原生叠加层。\nSteam“停止”仅结束计时，请手动退出游戏。\n" + (current.Error ?? (owned ? "应用设置后才会更改启动方式，并重启 Steam。" : "请确认 Steam 已登录并拥有此游戏。"));
+                status.Text = (current.QaqrSteamManaged
+                    ? "QAQR：由 Steam 管理并传递叠加层；启动前请退出已有 QAQR，Steam 需以管理员身份运行。\n请手动选择" + profile.Name + "并开始。Steam“停止”会关闭本次 QAQR 及其游戏；QAQR 未退出时会继续计时。\n"
+                    : "QAQR：请手动选择" + profile.Name + "并开始游戏。此模式仅记录时长，不支持 Steam 原生叠加层。\nSteam“停止”仅结束计时，请手动退出游戏。\n")
+                    + (current.Error ?? (owned ? "应用设置后才会更改启动方式，并重启 Steam。" : "请确认 Steam 已登录并拥有此游戏。"));
             UpdateLaunchLayout(); UpdateNoticeHeight();
         }
 

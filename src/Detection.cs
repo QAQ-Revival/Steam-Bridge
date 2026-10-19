@@ -117,7 +117,7 @@ namespace EndfieldSteamBridge
             if (profile == GameProfile.Endfield && GameChannel.IdentifyGame(game) != GameChannel.Get(channelId).Id) return "终末地客户端渠道与所选服务器不一致";
             ready = true; return "QAQR 与游戏路径可用 · QAQR 可加载 Mod，请在其中手动选择游戏并开始";
         }
-        public static DetectionResult Scan(string launcher, string game, string channelId = null, string gameId = null, string method = null, string qaqr = null, string qaqrUserData = null)
+        public static DetectionResult Scan(string launcher, string game, string channelId = null, string gameId = null, string method = null, string qaqr = null, string qaqrUserData = null, bool? qaqrSteamManaged = null, bool? autoSync = null)
         {
             var profile = GameProfile.Get(gameId);
             var result = new DetectionResult { GameId = profile.Id };
@@ -128,6 +128,8 @@ namespace EndfieldSteamBridge
                 result.LaunchMethod = LaunchMethod.Normalize(method ?? (config == null ? null : config.LaunchMethod));
                 result.QaqrPath = qaqr ?? (config != null && QaqrLauncher.Valid(config.QaqrPath) ? config.QaqrPath : QaqrLauncher.Find());
                 result.QaqrUserData = QaqrLauncher.UserData(result.QaqrPath, qaqrUserData ?? (config == null ? null : config.QaqrUserData));
+                result.QaqrSteamManaged = qaqrSteamManaged ?? (config != null && config.QaqrSteamManaged);
+                result.AutoSync = autoSync ?? (config == null ? true : config.AutoSync ?? true);
                 var channel = GameChannel.Get(channelId ?? (config == null ? null : config.ChannelId)); result.ChannelId = channel.Id;
                 bool sameChannel = config != null && GameChannel.Get(config.ChannelId).Id == channel.Id;
                 bool sameMethod = config != null && LaunchMethod.Normalize(config.LaunchMethod) == result.LaunchMethod;
