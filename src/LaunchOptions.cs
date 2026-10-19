@@ -47,7 +47,7 @@ namespace EndfieldSteamBridge
             if (changed == text) return;
             string temp = path + ".steam-bridge-tmp";
             File.WriteAllText(temp, changed, new UTF8Encoding(bytes.Length >= 3 && bytes[0] == 239 && bytes[1] == 187 && bytes[2] == 191));
-            File.Replace(temp, path, null);
+            App.Replace(temp, path);
         }
     }
 }

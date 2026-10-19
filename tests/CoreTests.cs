@@ -19,7 +19,14 @@ namespace EndfieldSteamBridge
             {
                 if (args[1] == "handoff")
                     using (var child = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(args[2], "r123456789abc.exe"), "--qaqr-fixture hold " + Arguments.Quote(args[2])) { UseShellExecute = false, CreateNoWindow = true })) { }
-                else { File.WriteAllText(Path.Combine(args[2], "pid.txt"), System.Diagnostics.Process.GetCurrentProcess().Id.ToString()); System.Threading.Thread.Sleep(3500); }
+                else
+                {
+                    App.Save(Path.Combine(args[2], "environment.json"), new {
+                        SteamAppId = Environment.GetEnvironmentVariable("SteamAppId"), SteamGameId = Environment.GetEnvironmentVariable("SteamGameId"),
+                        SteamOverlayGameId = Environment.GetEnvironmentVariable("SteamOverlayGameId"), UserData = Environment.GetEnvironmentVariable("QAQM_USER_DATA")
+                    });
+                    File.WriteAllText(Path.Combine(args[2], "pid.txt"), System.Diagnostics.Process.GetCurrentProcess().Id.ToString()); System.Threading.Thread.Sleep(3500);
+                }
                 return 0;
             }
             if (args.Length == 3 && args[0] == "--probe") { App.Save(args[1], SteamAccount.Probe(Detection.FindSteam(), GameProfile.Get(args[2]))); return 0; }
@@ -185,6 +192,7 @@ namespace EndfieldSteamBridge
         {
             var legacy = App.Json.Deserialize<RuntimeConfig>("{\"GameId\":\"endfield\",\"Launcher\":\"original.exe\"}");
             Check(LaunchMethod.Normalize(legacy.LaunchMethod) == LaunchMethod.Official, "legacy config retains official launcher mode");
+            Check(!App.Json.Deserialize<RuntimeConfig>("{\"LaunchMethod\":\"qaqr\"}").QaqrSteamManaged, "existing QAQR config keeps independent mode until opted in");
             string folder = Path.Combine(root, "QAQR 空 格"), source = Path.Combine(folder, QaqrLauncher.FileName), random = Path.Combine(folder, "r123456789abc.exe");
             string app = Path.Combine(folder, "resources", "app"), userData = Path.Combine(root, "existing-profile");
             Directory.CreateDirectory(Path.Combine(app, "out", "main")); Directory.CreateDirectory(userData);
@@ -198,11 +206,26 @@ namespace EndfieldSteamBridge
             bool ready; Detection.ClientStatus(GameProfile.Endfield, null, endfield, "official", LaunchMethod.Qaqr, source, out ready);
             Check(ready && QaqrLauncher.FindGame(GameProfile.Endfield, source, userData) == endfield && File.ReadAllText(configPath) == config, "QAQR detects chosen game's real path without changing its profile or random settings");
             Check(QaqrLauncher.ResolveUserData(source, "ignored", userData) == userData && QaqrLauncher.ResolveUserData(source, userData, null) == userData && QaqrLauncher.ResolveUserData(source, null, null) == Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QAQ-Revival"), "QAQR respects environment/saved profile and uses roaming default");
-            var launch = QaqrLauncher.StartInfo(source, userData);
-            Check(launch.FileName == source && launch.WorkingDirectory == folder && launch.Arguments == "" && !launch.UseShellExecute && !launch.EnvironmentVariables.ContainsKey("ELECTRON_RUN_AS_NODE") && !launch.EnvironmentVariables.ContainsKey("SteamAppId") && launch.EnvironmentVariables["QAQM_USER_DATA"] == userData, "QAQR launches stable entry with no game arguments or inherited Node/Steam app identity");
+            var environment = new Dictionary<string, string>();
+            var steamKeys = new[] { "SteamAppId", "SteamGameId", "SteamOverlayGameId" };
+            System.Diagnostics.ProcessStartInfo managedLaunch;
+            foreach (string key in steamKeys.Concat(new[] { "ELECTRON_RUN_AS_NODE" })) environment[key] = Environment.GetEnvironmentVariable(key);
+            try
+            {
+                foreach (string key in steamKeys) Environment.SetEnvironmentVariable(key, "3513350");
+                Environment.SetEnvironmentVariable("ELECTRON_RUN_AS_NODE", "1");
+                var launch = QaqrLauncher.StartInfo(source, userData);
+                managedLaunch = QaqrLauncher.StartInfo(source, userData, true);
+                Check(launch.FileName == source && launch.WorkingDirectory == folder && launch.Arguments == "" && !launch.UseShellExecute && !launch.EnvironmentVariables.ContainsKey("ELECTRON_RUN_AS_NODE") && steamKeys.All(k => !launch.EnvironmentVariables.ContainsKey(k)) && launch.EnvironmentVariables["QAQM_USER_DATA"] == userData, "independent QAQR strips inherited Steam and Node identity");
+                Check(managedLaunch.FileName == source && managedLaunch.Arguments == "" && !managedLaunch.UseShellExecute && !managedLaunch.EnvironmentVariables.ContainsKey("ELECTRON_RUN_AS_NODE") && steamKeys.All(k => managedLaunch.EnvironmentVariables[k] == "3513350" && Environment.GetEnvironmentVariable(k) == "3513350"), "managed QAQR preserves every Steam identity without changing the parent environment");
+            }
+            finally { foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value); }
             var scan = new DetectionResult { GameId = "endfield", ChannelId = "official", LaunchMethod = LaunchMethod.Qaqr, QaqrPath = source, QaqrUserData = userData, Game = endfield };
             var saved = App.Json.Deserialize<RuntimeConfig>(App.Json.Serialize(InstallService.RuntimeSettings(scan, "fixture-task")));
             Check(saved.LaunchMethod == LaunchMethod.Qaqr && saved.QaqrPath == source && saved.QaqrUserData == userData && saved.Launcher == null && saved.Game == endfield, "QAQR configuration roundtrip preserves independent launcher/profile fields");
+            scan.QaqrSteamManaged = true;
+            saved = App.Json.Deserialize<RuntimeConfig>(App.Json.Serialize(InstallService.RuntimeSettings(scan, "fixture-task")));
+            Check(saved.QaqrSteamManaged, "Steam management selection survives settings persistence");
             string digest;
             using (var stream = File.OpenRead(random)) using (var sha = System.Security.Cryptography.SHA256.Create()) digest = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
             string marker = Path.Combine(folder, ".r123456789abc.exe.runtime.json");
@@ -212,14 +235,20 @@ namespace EndfieldSteamBridge
             App.Save(marker, new { version = 2, source = QaqrLauncher.FileName, executable = Path.GetFileName(random), sha256 = new string('0', 64), sourceSha256 = digest });
             Check(!processes.IsManager(random, ""), "random image digest mismatch is not a QAQR main process");
             App.Save(marker, new { version = 2, source = QaqrLauncher.FileName, executable = Path.GetFileName(random), sha256 = digest, sourceSha256 = digest, activated = false });
-            using (var bootstrap = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(source, "--qaqr-fixture handoff " + Arguments.Quote(folder)) { UseShellExecute = false, CreateNoWindow = true }))
+            managedLaunch.Arguments = "--qaqr-fixture handoff " + Arguments.Quote(folder); managedLaunch.CreateNoWindow = true;
+            using (var bootstrap = System.Diagnostics.Process.Start(managedLaunch))
             {
                 Check(bootstrap.WaitForExit(10000) && bootstrap.ExitCode == 0, "stable QAQR fixture hands off and exits");
                 string pidPath = Path.Combine(folder, "pid.txt"); var deadline = DateTime.UtcNow.AddSeconds(5);
                 while (!File.Exists(pidPath) && DateTime.UtcNow < deadline) System.Threading.Thread.Sleep(50);
                 using (var child = System.Diagnostics.Process.GetProcessById(Int32.Parse(File.ReadAllText(pidPath))))
                 {
-                    try { Check(processes.Running(), "live random main process is tracked after initial process exits"); }
+                    try
+                    {
+                        Check(processes.Running(), "live random main process is tracked after initial process exits");
+                        var inherited = QaqrLauncher.ReadObject(Path.Combine(folder, "environment.json"));
+                        Check(steamKeys.All(k => KeyValues.String(inherited, k) == "3513350") && KeyValues.String(inherited, "UserData") == userData, "Steam identity and QAQR profile reach the random-name child process");
+                    }
                     finally { if (!child.WaitForExit(8000) && Detection.Same(BridgeRuntime.ImagePath(child.Id), random)) { child.Kill(); child.WaitForExit(); } }
                 }
             }
@@ -228,6 +257,9 @@ namespace EndfieldSteamBridge
             Check(!session.Finished(now.AddSeconds(22), false, true) && session.Finished(now.AddSeconds(25), true, false), "game can outlive manager and session ends even while shared QAQR remains open");
             var cancelled = new QaqrSession(now);
             Check(cancelled.Finished(now.AddSeconds(31), false, false), "failed/closed QAQR launch stops waiting after handoff grace");
+            var managed = new QaqrSession(now, true);
+            Check(!managed.Finished(now, true, false) && !managed.Finished(now.AddSeconds(1), false, true) && !managed.Finished(now.AddSeconds(5), true, false), "managed session stays active for either the game or QAQR");
+            Check(!managed.Finished(now.AddSeconds(6), false, false) && managed.Finished(now.AddSeconds(7), false, false), "managed session ends after both QAQR and the game exit");
         }
     }
 }

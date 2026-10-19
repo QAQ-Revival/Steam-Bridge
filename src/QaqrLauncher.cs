@@ -84,14 +84,14 @@ namespace EndfieldSteamBridge
             catch (ArgumentException) { return null; }
             catch (InvalidOperationException) { return null; }
         }
-        public static ProcessStartInfo StartInfo(string executable, string userData)
+        public static ProcessStartInfo StartInfo(string executable, string userData, bool steamManaged = false)
         {
             var info = new ProcessStartInfo(executable, "") { WorkingDirectory = Path.GetDirectoryName(executable), UseShellExecute = false };
             info.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");
             info.EnvironmentVariables["QAQM_USER_DATA"] = userData;
-            // This is a shared manager launched outside Steam's process tree. Do not
-            // attribute other games it launches to the currently selected Steam app.
-            foreach (string key in new[] { "SteamAppId", "SteamGameId", "SteamOverlayGameId" }) info.EnvironmentVariables.Remove(key);
+            // Only a fresh manager launched directly by Steam may inherit its app identity.
+            if (!steamManaged)
+                foreach (string key in new[] { "SteamAppId", "SteamGameId", "SteamOverlayGameId" }) info.EnvironmentVariables.Remove(key);
             return info;
         }
     }
@@ -148,14 +148,15 @@ namespace EndfieldSteamBridge
     internal sealed class QaqrSession
     {
         private DateTime lastManager, lastGame;
+        private readonly bool steamManaged;
         public bool GameObserved { get; private set; }
-        public QaqrSession(DateTime now) { lastManager = now; }
-        // True ends only the bridge. QAQR and all of its games are never terminated here.
+        public QaqrSession(DateTime now, bool steamManaged = false) { lastManager = now; this.steamManaged = steamManaged; }
+        // Steam owns the managed process tree; independent sessions only track the game.
         public bool Finished(DateTime now, bool managerRunning, bool gameRunning)
         {
-            if (gameRunning) { GameObserved = true; lastGame = now; return false; }
-            if (GameObserved) return now - lastGame >= TimeSpan.FromSeconds(2);
             if (managerRunning) lastManager = now;
+            if (gameRunning) { GameObserved = true; lastGame = now; return false; }
+            if (GameObserved) return now - lastGame >= TimeSpan.FromSeconds(2) && (!steamManaged || now - lastManager >= TimeSpan.FromSeconds(2));
             return now - lastManager >= TimeSpan.FromSeconds(30);
         }
     }

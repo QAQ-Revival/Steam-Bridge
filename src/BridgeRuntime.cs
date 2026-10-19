@@ -12,8 +12,8 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-// Steam launches the official launcher in its own child process tree so Valve's
-// renderer can propagate normally. Only session cleanup uses Task Scheduler.
+// Steam launches official launchers and opted-in QAQR sessions in its own process
+// tree. Task Scheduler handles official cleanup and independent QAQR sessions.
 namespace EndfieldSteamBridge
 {
 internal static class BridgeRuntime
@@ -39,17 +39,21 @@ internal static class BridgeRuntime
         public string Id { get; set; }
         public int LauncherPid { get; set; }
         public long LauncherStartTicks { get; set; }
+        public bool Repair { get; set; }
+        public long CreatedUtcTicks { get; set; }
     }
 
     public static int Run(string gameId)
     {
         LoadConfig(gameId);
-        if (Environment.GetEnvironmentVariable("SteamAppId") != Profile.AppId.ToString())
-            throw new InvalidOperationException("请从 Steam 库中的《" + Profile.SteamName + "》开始游戏。");
         bool created;
         using (var mutex = new Mutex(true, @"Local\SteamBridge-" + Profile.Id, out created))
         {
             if (!created) return 0;
+            // A separate scheduled worker survives Steam shutdown during version repair.
+            if (AutoRepair.TryStart(Profile, Config)) return 0;
+            if (Environment.GetEnvironmentVariable("SteamAppId") != Profile.AppId.ToString())
+                throw new InvalidOperationException("未收到对应的 SteamAppId。请从 Steam 库中的《" + Profile.SteamName + "》官方条目开始游戏。若 Steam 刚更新，请在 QAQR 中检测 / 同步桥接。");
             return LaunchMethod.Normalize(Config.LaunchMethod) == LaunchMethod.Qaqr ? RunQaqr() : Bridge();
         }
     }
@@ -183,46 +187,37 @@ internal static class BridgeRuntime
                 bool ready;
                 string status = Detection.ClientStatus(Profile, Launcher, Game, Channel.Id, Config.LaunchMethod, Config.QaqrPath, out ready);
                 if (!ready) throw new InvalidOperationException(status);
-                if (GameRunning()) throw new InvalidOperationException("所选游戏已经运行。请先手动退出游戏，再从 Steam 开始本次计时；QAQR 可以保持打开。");
+                bool steamManaged = Config.QaqrSteamManaged;
+                if (GameRunning()) throw new InvalidOperationException("所选游戏已经运行。请先手动退出游戏，再从 Steam 启动。" + (steamManaged ? "请同时退出已有 QAQR。" : "QAQR 可以保持打开。"));
                 var manager = new QaqrProcesses(Config.QaqrPath);
-                Log("bridge", (manager.Running() ? "唤醒已有" : "独立打开") + " QAQR；不传递 Steam 叠加层，不接管共享管理器生命周期。");
-                Request request;
-                using (var self = Process.GetCurrentProcess())
-                    request = new Request { LaunchMethod = LaunchMethod.Qaqr, QaqrUserData = QaqrLauncher.UserData(Config.QaqrPath, Config.QaqrUserData), Pid = self.Id, StartTicks = self.StartTime.ToUniversalTime().Ticks, Id = Guid.NewGuid().ToString("N") };
-                WriteJson(RequestPath, request);
-                // The existing scheduled helper runs OUTSIDE Steam's process tree.
-                // A shared Electron manager must not keep Steam running or be killed by Steam Stop.
-                using (var task = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/run /tn " + Arguments.Quote(TaskName)) { UseShellExecute = false, CreateNoWindow = true }))
+                bool managerRunning = manager.Running();
+                string userData = QaqrLauncher.UserData(Config.QaqrPath, Config.QaqrUserData);
+                if (steamManaged)
                 {
-                    task.WaitForExit();
-                    if (task.ExitCode != 0) throw new InvalidOperationException("无法打开 QAQR，请重新应用当前游戏设置。");
+                    if (managerRunning) throw new InvalidOperationException("已开启“由 Steam 管理 QAQR”。请先完全退出已有 QAQR（包括托盘），再从 Steam 启动，才能传递叠加层。");
+                    if (!new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
+                        throw new InvalidOperationException("Steam 管理 QAQR 需要相同的管理员权限。请先正常退出 Steam，再以管理员身份打开 Steam 后重试。");
+                    // Do not use the scheduled helper: Steam must own the fresh manager
+                    // and its random-name relaunch, along with the games it starts.
+                    using (var launched = Process.Start(QaqrLauncher.StartInfo(Config.QaqrPath, userData, true)))
+                        Log("bridge", "由 Steam 进程链打开 QAQR PID=" + launched.Id + "；保留叠加层环境，Steam 管理本次 QAQR 与其游戏。");
                 }
-                QaqrLaunchResult result = null;
-                var deadline = DateTime.UtcNow.AddSeconds(20);
-                while (DateTime.UtcNow < deadline)
+                else
                 {
-                    if (File.Exists(QaqrResultPath))
-                    {
-                        var candidate = App.Load<QaqrLaunchResult>(QaqrResultPath);
-                        if (candidate.Id == request.Id) { result = candidate; break; }
-                    }
-                    Thread.Sleep(200);
+                    Log("bridge", (managerRunning ? "唤醒已有" : "独立打开") + " QAQR；不传递 Steam 叠加层，不接管共享管理器生命周期。");
+                    StartIndependentQaqr(userData);
                 }
-                if (result == null) throw new TimeoutException("QAQR 启动任务未响应，请重新应用当前游戏设置。不会关闭已有 QAQR。");
-                if (!result.Success) throw new InvalidOperationException(result.Error);
-                Log("bridge", "请在 QAQR 中选择" + Profile.Name + "并手动开始。Steam 停止仅结束桥接计时。");
-                var session = new QaqrSession(DateTime.UtcNow);
+                Log("bridge", "请在 QAQR 中选择" + Profile.Name + "并手动开始。" + (steamManaged ? "Steam 停止会结束本次 QAQR 与其游戏；QAQR 未退出时会继续计时。" : "Steam 停止仅结束桥接计时。"));
+                var session = new QaqrSession(DateTime.UtcNow, steamManaged);
                 while (true)
                 {
                     bool playing = GameRunning(), observed = session.GameObserved;
-                    // Once the selected game has started, the shared manager's lifetime
-                    // is irrelevant. Only the exact configured game image controls completion.
-                    bool finished = session.Finished(DateTime.UtcNow, !session.GameObserved && manager.Running(), playing);
+                    bool finished = session.Finished(DateTime.UtcNow, (steamManaged || !session.GameObserved) && manager.Running(), playing);
                     if (!observed && session.GameObserved) Log("bridge", "已检测到所选游戏：" + GameImage);
                     if (finished) break;
                     Thread.Sleep(500);
                 }
-                Log("bridge", session.GameObserved ? "所选游戏已退出，结束计时；保留 QAQR 和其他游戏。" : "QAQR 已退出或启动未完成，结束本次等待。");
+                Log("bridge", steamManaged ? "QAQR 与所选游戏已退出，结束 Steam 管理会话。" : session.GameObserved ? "所选游戏已退出，结束计时；保留 QAQR 和其他游戏。" : "QAQR 已退出或启动未完成，结束本次等待。");
                 return 0;
             }
         }
@@ -232,6 +227,32 @@ internal static class BridgeRuntime
             MessageBox.Show(error.Message, "steam-bridge · QAQR", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 1;
         }
+    }
+    private static void StartIndependentQaqr(string userData)
+    {
+        Request request;
+        using (var self = Process.GetCurrentProcess())
+            request = new Request { LaunchMethod = LaunchMethod.Qaqr, QaqrUserData = userData, Pid = self.Id, StartTicks = self.StartTime.ToUniversalTime().Ticks, Id = Guid.NewGuid().ToString("N") };
+        WriteJson(RequestPath, request);
+        // Independent QAQR stays outside Steam's process tree, including on Steam Stop.
+        using (var task = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/run /tn " + Arguments.Quote(TaskName)) { UseShellExecute = false, CreateNoWindow = true }))
+        {
+            task.WaitForExit();
+            if (task.ExitCode != 0) throw new InvalidOperationException("无法打开 QAQR，请重新应用当前游戏设置。");
+        }
+        QaqrLaunchResult result = null;
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (File.Exists(QaqrResultPath))
+            {
+                var candidate = App.Load<QaqrLaunchResult>(QaqrResultPath);
+                if (candidate.Id == request.Id) { result = candidate; break; }
+            }
+            Thread.Sleep(200);
+        }
+        if (result == null) throw new TimeoutException("QAQR 启动任务未响应，请重新应用当前游戏设置。不会关闭已有 QAQR。");
+        if (!result.Success) throw new InvalidOperationException(result.Error);
     }
     private static int OpenQaqr(Request request)
     {
@@ -255,6 +276,9 @@ internal static class BridgeRuntime
         try { request = Json.Deserialize<Request>(File.ReadAllText(RequestPath)); }
         catch (Exception error) { Log("watch", "无法读取本轮启动记录：" + error.Message); return 1; }
         if (request == null || LaunchMethod.Normalize(request.LaunchMethod) != LaunchMethod.Normalize(Config.LaunchMethod)) return 1;
+        if (request.Repair) return AutoRepair.Finish(Profile, Config, request);
+        // A stale/manual task invocation must not open managed QAQR outside Steam.
+        if (LaunchMethod.Normalize(Config.LaunchMethod) == LaunchMethod.Qaqr && Config.QaqrSteamManaged) return 0;
         if (LaunchMethod.Normalize(Config.LaunchMethod) == LaunchMethod.Qaqr) return OpenQaqr(request);
         if (!BridgeAlive(request)) { CleanupStoppedSession(request); return 0; }
         // Stay outside Steam's process tree so Steam Stop can still clean this session.
@@ -325,7 +349,7 @@ internal static class BridgeRuntime
         catch (ManagementException error) { Log("watch", "读取本轮进程树失败：" + error.Message); }
     }
 
-    private static bool BridgeAlive(Request request)
+    internal static bool BridgeAlive(Request request)
     {
         if (request == null) return false;
         try

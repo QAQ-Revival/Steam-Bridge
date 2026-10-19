@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using System.Threading;
+using System.Linq;
 
 namespace EndfieldSteamBridge
 {
@@ -25,6 +26,23 @@ namespace EndfieldSteamBridge
         [STAThread]
         private static int Main(string[] args)
         {
+            // Keep the Steam launch environment intact; only the setup UI/commands elevate.
+            bool background = args.Length > 0 && new[] { "--bridge", "--assist", "--probe", "--diagnose", "--metadata" }.Contains(args[0]);
+            var principal = new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent());
+            if (!background && !principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator))
+            {
+                try
+                {
+                    using (var elevated = Process.Start(new ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location,
+                        String.Join(" ", args.Select(Arguments.Quote))) { UseShellExecute = true, Verb = "runas" })) { }
+                    return 0;
+                }
+                catch (System.ComponentModel.Win32Exception error)
+                {
+                    if (error.NativeErrorCode == 1223) return 0;
+                    MessageBox.Show(error.Message, "steam-bridge", MessageBoxButtons.OK, MessageBoxIcon.Error); return 1;
+                }
+            }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length >= 2 && args.Length <= 4 && (args[0] == "--enable" || args[0] == "--restore" || args[0] == "--enable-all"))

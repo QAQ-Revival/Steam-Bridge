@@ -28,6 +28,12 @@ namespace EndfieldSteamBridge
         }
 
         public static Font Font(float size) { return new Font("Microsoft YaHei UI", size, FontStyle.Regular, GraphicsUnit.Point); }
+        public static void DrawText(Graphics graphics, string text, Font font, Rectangle bounds, Color color, TextFormatFlags flags)
+        {
+            // Transparent children are painted through translated/clipped parent graphics.
+            TextRenderer.DrawText(graphics, text, font, bounds, color,
+                flags | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
+        }
         public static float Scale(Control control)
         {
             var form = control as MainForm ?? control.FindForm() as MainForm;
@@ -103,7 +109,7 @@ namespace EndfieldSteamBridge
         }
         private void PaintPlaceholder(Graphics graphics)
         {
-            TextRenderer.DrawText(graphics, "未检测到路径，请浏览选择文件", Font, ClientRectangle, FluentTheme.Muted,
+            FluentTheme.DrawText(graphics, "未检测到路径，请浏览选择文件", Font, ClientRectangle, FluentTheme.Muted,
                 TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
         }
     }
@@ -124,6 +130,8 @@ namespace EndfieldSteamBridge
             BackColor = Color.Transparent; ForeColor = FluentTheme.Ink;
             FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0;
             Cursor = Cursors.Hand; Height = 36; UseVisualStyleBackColor = false;
+            // ButtonBase marks itself opaque; our rounded/quiet buttons need the parent background.
+            SetStyle(ControlStyles.Opaque, false);
         }
 
         protected override void OnMouseEnter(EventArgs e) { hovered = true; Invalidate(); base.OnMouseEnter(e); }
@@ -171,7 +179,7 @@ namespace EndfieldSteamBridge
             {
                 int iconWidth = FluentTheme.Px(this, 22);
                 using (var font = new Font(FluentTheme.IconFamily, (Navigation ? 20 : 14.67f) * FluentTheme.Scale(this), FontStyle.Regular, GraphicsUnit.Pixel))
-                    TextRenderer.DrawText(e.Graphics, Glyph, font, new Rectangle(left, 0, iconWidth, Height), ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    FluentTheme.DrawText(e.Graphics, Glyph, font, new Rectangle(left, 0, iconWidth, Height), ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
                 left += iconWidth + FluentTheme.Px(this, 10);
             }
             var bounds = new Rectangle(left, 0, Math.Max(0, Width - left - FluentTheme.Px(this, 12)), Height);
@@ -180,12 +188,12 @@ namespace EndfieldSteamBridge
             if (!String.IsNullOrEmpty(Subtitle))
             {
                 bounds.Y = FluentTheme.Px(this, 11); bounds.Height = FluentTheme.Px(this, 23);
-                TextRenderer.DrawText(e.Graphics, Text, Font, bounds, ink, flags);
+                FluentTheme.DrawText(e.Graphics, Text, Font, bounds, ink, flags);
                 bounds.Y += FluentTheme.Px(this, 25); bounds.Height = FluentTheme.Px(this, 18);
                 using (var font = new Font("Segoe UI", 11.33f * FluentTheme.Scale(this), FontStyle.Regular, GraphicsUnit.Pixel))
-                    TextRenderer.DrawText(e.Graphics, Subtitle, font, bounds, Enabled ? (highlighted ? ink : FluentTheme.Muted) : SystemColors.GrayText, flags);
+                    FluentTheme.DrawText(e.Graphics, Subtitle, font, bounds, Enabled ? (highlighted ? ink : FluentTheme.Muted) : SystemColors.GrayText, flags);
             }
-            else TextRenderer.DrawText(e.Graphics, Text, Font, bounds, ink, flags);
+            else FluentTheme.DrawText(e.Graphics, Text, Font, bounds, ink, flags);
             if (Focused && ShowFocusCues)
             {
                 int inset = FluentTheme.Px(this, 3);
@@ -217,7 +225,7 @@ namespace EndfieldSteamBridge
             using (var brush = new SolidBrush(selected ? FluentTheme.AccentSoft : FluentTheme.Surface)) e.Graphics.FillRectangle(brush, e.Bounds);
             Color ink = selected && SystemInformation.HighContrast ? FluentTheme.OnAccent : FluentTheme.Ink;
             var bounds = Rectangle.Inflate(e.Bounds, -FluentTheme.Px(this, 10), 0);
-            TextRenderer.DrawText(e.Graphics, e.Index < 0 ? Text : GetItemText(Items[e.Index]), Font, bounds, ink, TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            FluentTheme.DrawText(e.Graphics, e.Index < 0 ? Text : GetItemText(Items[e.Index]), Font, bounds, ink, TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
         protected override void WndProc(ref Message m)
         {
@@ -240,7 +248,7 @@ namespace EndfieldSteamBridge
             { graphics.FillPath(brush, shape); graphics.DrawPath(pen, shape); }
             Color ink = Enabled ? FluentTheme.Ink : SystemColors.GrayText;
             var text = new Rectangle(FluentTheme.Px(this, 10), 0, Math.Max(0, Width - FluentTheme.Px(this, 40)), Height);
-            TextRenderer.DrawText(graphics, Text, Font, text, ink, TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            FluentTheme.DrawText(graphics, Text, Font, text, ink, TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             float x = Width - FluentTheme.Px(this, 17), y = Height / 2f;
             using (var pen = new Pen(ink, Math.Max(1, FluentTheme.Scale(this))))
                 graphics.DrawLines(pen, new[] { new PointF(x - FluentTheme.Px(this, 4), y - 2), new PointF(x, y + 2), new PointF(x + FluentTheme.Px(this, 4), y - 2) });
@@ -260,7 +268,7 @@ namespace EndfieldSteamBridge
             Color fill = SystemInformation.HighContrast ? FluentTheme.Surface : Success ? Color.FromArgb(223, 246, 221) : Color.FromArgb(240, 240, 240);
             using (var shape = FluentTheme.Round(new RectangleF(0, 0, Width - 1, Height - 1), FluentTheme.Px(this, 4)))
             using (var brush = new SolidBrush(fill)) e.Graphics.FillPath(brush, shape);
-            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            FluentTheme.DrawText(e.Graphics, Text, Font, ClientRectangle, ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         }
     }
 }
