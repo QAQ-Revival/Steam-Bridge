@@ -46,7 +46,7 @@ namespace EndfieldSteamBridge
             return null;
         }
         public static string UserData(string executable, string saved = null)
-        { return ResolveUserData(executable, saved, Environment.GetEnvironmentVariable("QAQM_USER_DATA")); }
+        { return ResolveUserData(executable, saved, Environment.GetEnvironmentVariable("QAQR_USER_DATA")); }
         internal static string ResolveUserData(string executable, string saved, string environment)
         {
             string path = !String.IsNullOrEmpty(environment) ? environment : !String.IsNullOrEmpty(saved) ? saved : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QAQ-Revival");
@@ -88,7 +88,7 @@ namespace EndfieldSteamBridge
         {
             var info = new ProcessStartInfo(executable, "") { WorkingDirectory = Path.GetDirectoryName(executable), UseShellExecute = false };
             info.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");
-            info.EnvironmentVariables["QAQM_USER_DATA"] = userData;
+            info.EnvironmentVariables["QAQR_USER_DATA"] = userData;
             // Only a fresh manager launched directly by Steam may inherit its app identity.
             if (!steamManaged)
                 foreach (string key in new[] { "SteamAppId", "SteamGameId", "SteamOverlayGameId" }) info.EnvironmentVariables.Remove(key);

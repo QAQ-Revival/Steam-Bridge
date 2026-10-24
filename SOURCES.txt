@@ -1,0 +1,8 @@
+Steam bridge core: https://github.com/QAQ-Revival/Steam-Bridge
+License: MIT (see LICENSE).
+Imported from the 0.3.0 core, including subsequent local QAQR process-management support.
+The QAQR host in qaqr/ provides a JSON command interface over the shared src/ core.
+The existing Steam-Bridge repository retains its standalone WinForms manager.
+Core installation, backup, rollback, process tracking and original data paths are retained.
+Build QAQR host: node build-qaqr.cjs
+Verify: node build-qaqr.cjs --test
