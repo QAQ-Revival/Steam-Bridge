@@ -7,7 +7,12 @@ namespace EndfieldSteamBridge
 {
     internal static class App
     {
+// Preserve each host's existing state version when sharing the core.
+#if QAQR_HOST
+        public const string Version = "0.3.1";
+#else
         public const string Version = "1.0";
+#endif
         public static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         public static readonly string Home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EndfieldSteamBridge");
         public static readonly string StatePath = Path.Combine(Home, "installation.json");

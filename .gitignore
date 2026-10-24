@@ -8,3 +8,5 @@ diagnose-restored.json
 integration-*.json
 preview*.png
 *.log
+
+/build/

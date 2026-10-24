@@ -23,13 +23,14 @@ namespace EndfieldSteamBridge
                 {
                     App.Save(Path.Combine(args[2], "environment.json"), new {
                         SteamAppId = Environment.GetEnvironmentVariable("SteamAppId"), SteamGameId = Environment.GetEnvironmentVariable("SteamGameId"),
-                        SteamOverlayGameId = Environment.GetEnvironmentVariable("SteamOverlayGameId"), UserData = Environment.GetEnvironmentVariable("QAQM_USER_DATA")
+                        SteamOverlayGameId = Environment.GetEnvironmentVariable("SteamOverlayGameId"), UserData = Environment.GetEnvironmentVariable("QAQR_USER_DATA")
                     });
                     File.WriteAllText(Path.Combine(args[2], "pid.txt"), System.Diagnostics.Process.GetCurrentProcess().Id.ToString()); System.Threading.Thread.Sleep(3500);
                 }
                 return 0;
             }
             if (args.Length == 3 && args[0] == "--probe") { App.Save(args[1], SteamAccount.Probe(Detection.FindSteam(), GameProfile.Get(args[2]))); return 0; }
+#if !QAQR_HOST
             if ((args.Length == 3 || args.Length == 4) && args[0] == "--preview")
             {
                 System.Windows.Forms.Application.EnableVisualStyles();
@@ -37,6 +38,7 @@ namespace EndfieldSteamBridge
                 using (var form = new MainForm()) form.SavePreview(args[1], "official", args[2], args.Length == 4 ? args[3] : null);
                 return 0;
             }
+#endif
             if (args.Length == 2 && args[0] == "--inspect-local")
             {
                 var rows = new List<object>();
@@ -62,6 +64,7 @@ namespace EndfieldSteamBridge
             try
             {
                 ChannelTests(root);
+                AutoSyncTests();
                 MultiGameTests(root);
                 QaqrTests(root);
                 var vdf = KeyValues.Parse("//comment\n\"root\" { \"path\" \"D:\\\\游戏\\\\Endfield\" \"a\" { \"b\" \"quoted\\\"text\" } }");
@@ -121,6 +124,30 @@ namespace EndfieldSteamBridge
                 string full = Path.GetFullPath(root);
                 if (full.StartsWith(Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory), StringComparison.OrdinalIgnoreCase) && Path.GetFileName(full).StartsWith("EndfieldBridge-tests-")) Directory.Delete(full, true);
             }
+        }
+        private static void AutoSyncTests()
+        {
+            var state = new Installation { Phase = "enabled", Executable = "steam-bridge.exe", SteamExecutable = "Endfield.exe", BridgeDirectory = @"D:\fixture\Endfield Steam CN Bridge" };
+            var metadata = new Metadata { Build = "200", Executable = "Endfield.exe", Depots = new Dictionary<string, string> { { "1", "new" } } };
+            var manifest = new Dictionary<string, object> { { "installdir", "Endfield Steam CN Bridge" }, { "buildid", "100" } };
+            Check(AutoSync.NeedsSync(state, metadata, manifest), "Steam build update requires automatic sync");
+            manifest["buildid"] = "200";
+            Check(AutoSync.NeedsSync(state, metadata, manifest), "depot update requires sync even when build id matches");
+            manifest["InstalledDepots"] = new Dictionary<string, object> { { "1", new Dictionary<string, object> { { "manifest", "new" } } } };
+            Check(!AutoSync.NeedsSync(state, metadata, manifest), "current Steam metadata causes no repeated restart");
+            manifest["installdir"] = "Real game";
+            Throws(() => AutoSync.NeedsSync(state, metadata, manifest), "auto sync refuses an externally changed install directory");
+            manifest["BytesToDownload"] = "100"; manifest["BytesDownloaded"] = "10";
+            Check(AutoSync.HasPendingTransfer(manifest), "background sync defers pending downloads");
+            manifest["BytesDownloaded"] = "100";
+            Check(!AutoSync.HasPendingTransfer(manifest), "completed download counters do not block sync");
+            var now = DateTime.UtcNow;
+            var repair = new BridgeRuntime.Request { Repair = true, Id = Guid.NewGuid().ToString("N"), Pid = 1, StartTicks = now.Ticks, CreatedUtcTicks = now.Ticks };
+            Check(AutoRepair.ValidRequest(repair, now) && !AutoRepair.ValidRequest(repair, now.AddMinutes(3)), "independent repair accepts a fresh request and rejects stale replay");
+            var reply = App.Json.Deserialize<AutoRepair.Ready>(App.Json.Serialize(new AutoRepair.Ready { Id = repair.Id, Success = true }));
+            Check(reply.Success && reply.Id == repair.Id, "separate repair processes exchange the same JSON handoff identity");
+            var config = new RuntimeConfig { QaqrPath = @"D:\fixture\QAQ-Revival.exe", QaqrUserData = @"D:\fixture\profile" };
+            Check(AutoSync.SameProfile(config, @"D:\fixture\profile") && !AutoSync.SameProfile(config, @"D:\fixture\another-profile"), "automatic sync cannot touch another QAQR profile's bridge installs");
         }
         private static void ChannelTests(string root)
         {
@@ -216,7 +243,7 @@ namespace EndfieldSteamBridge
                 Environment.SetEnvironmentVariable("ELECTRON_RUN_AS_NODE", "1");
                 var launch = QaqrLauncher.StartInfo(source, userData);
                 managedLaunch = QaqrLauncher.StartInfo(source, userData, true);
-                Check(launch.FileName == source && launch.WorkingDirectory == folder && launch.Arguments == "" && !launch.UseShellExecute && !launch.EnvironmentVariables.ContainsKey("ELECTRON_RUN_AS_NODE") && steamKeys.All(k => !launch.EnvironmentVariables.ContainsKey(k)) && launch.EnvironmentVariables["QAQM_USER_DATA"] == userData, "independent QAQR strips inherited Steam and Node identity");
+                Check(launch.FileName == source && launch.WorkingDirectory == folder && launch.Arguments == "" && !launch.UseShellExecute && !launch.EnvironmentVariables.ContainsKey("ELECTRON_RUN_AS_NODE") && steamKeys.All(k => !launch.EnvironmentVariables.ContainsKey(k)) && launch.EnvironmentVariables["QAQR_USER_DATA"] == userData, "independent QAQR strips inherited Steam and Node identity");
                 Check(managedLaunch.FileName == source && managedLaunch.Arguments == "" && !managedLaunch.UseShellExecute && !managedLaunch.EnvironmentVariables.ContainsKey("ELECTRON_RUN_AS_NODE") && steamKeys.All(k => managedLaunch.EnvironmentVariables[k] == "3513350" && Environment.GetEnvironmentVariable(k) == "3513350"), "managed QAQR preserves every Steam identity without changing the parent environment");
             }
             finally { foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value); }
