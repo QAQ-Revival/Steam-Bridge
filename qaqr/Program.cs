@@ -68,7 +68,7 @@ namespace EndfieldSteamBridge
         {
             var profile = GameProfile.Get(scan.GameId);
             string metadataError = null;
-            try { KeyValues.ReadAppInfo(Path.Combine(scan.SteamRoot ?? "", "appcache", "appinfo.vdf"), profile); }
+            try { KeyValues.ReadAppInfo(scan.SteamRoot, profile); }
             catch (Exception error) { metadataError = error.Message; }
             return new {
                 gameId = profile.Id, name = profile.Name, appId = profile.AppId,

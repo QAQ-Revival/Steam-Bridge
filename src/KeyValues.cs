@@ -122,60 +122,135 @@ namespace EndfieldSteamBridge
             }
             return b.ToString();
         }
-        public static Metadata ReadAppInfo(string file, GameProfile profile)
+        public static Metadata ReadAppInfo(string steam, GameProfile profile)
         {
-            using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            using (var r = new BinaryReader(stream, Encoding.UTF8))
-            {
-                uint magic = r.ReadUInt32(); r.ReadUInt32();
-                bool tableKeys = magic == 0x07564429;
-                if (!tableKeys && magic != 0x07564428 && magic != 0x07564427) throw new InvalidDataException("暂不支持此 Steam 元数据版本，请更新工具。");
-                string[] keys = null;
-                long limit = stream.Length;
-                if (tableKeys)
-                {
-                    long table = r.ReadInt64();
-                    if (table < 16 || table >= stream.Length) throw new InvalidDataException("Steam 元数据字符串表无效。");
-                    limit = table; stream.Position = table;
-                    int count = r.ReadInt32();
-                    if (count < 0 || count > 2000000) throw new InvalidDataException("Steam 字符串表过大。");
-                    keys = new string[count]; for (int i = 0; i < count; i++) keys[i] = CString(r);
-                    stream.Position = 16;
-                }
-                while (stream.Position + 8 <= limit)
-                {
-                    uint id = r.ReadUInt32(); if (id == 0) break;
-                    uint size = r.ReadUInt32(); long next = stream.Position + size;
-                    if (size < 40 || next > limit) throw new InvalidDataException("Steam 元数据记录无效。");
-                    if (id == profile.AppId)
-                    {
-                        stream.Position += magic == 0x07564427 ? 40 : 60;
-                        var root = BinaryObject(r, keys, next, 0);
-                        var info = Child(root, "appinfo");
-                        var config = Child(info, "config"); var depots = Child(info, "depots");
-                        var m = new Metadata { Build = String(Child(Child(depots, "branches"), "public"), "buildid"), Executable = String(Child(Child(config, "launch"), "0"), "executable") };
-                        uint build;
-                        if (!UInt32.TryParse(m.Build, out build) || build == 0 || System.String.IsNullOrEmpty(m.Executable)) throw new InvalidDataException(profile.Name + "元数据缺少启动或公共版本信息。请在 Steam 打开游戏库页面后重试。");
-                        m.Executable = profile.ValidateExecutable(m.Executable);
-                        foreach (var depot in depots)
-                        {
-                            uint depotId; if (!UInt32.TryParse(depot.Key, out depotId)) continue;
-                            string gid = String(Child(Child(depot.Value as Dictionary<string, object>, "manifests"), "public"), "gid");
-                            ulong parsed; if (UInt64.TryParse(gid, out parsed) && parsed > 0) m.Depots[depot.Key] = gid;
-                        }
-                        if (m.Depots.Count == 0) throw new InvalidDataException("没有可用的公共 depot 元数据。");
-                        return m;
-                    }
-                    stream.Position = next;
-                }
-            }
-            throw new InvalidDataException("Steam 缓存中没有" + profile.Name + "。请先将游戏加入库，并打开它的库页面，再重试检测。");
+            var metadata = FindAppInfo(steam, profile);
+            if (metadata == null) throw new InvalidDataException("Steam 缓存中没有" + profile.Name + "的版本信息。请先将游戏加入库，并打开它的库页面，再重试检测。");
+            return metadata;
         }
-        private static string CString(BinaryReader r)
+        // An installed bridge can still launch while Steam is rebuilding its cache.
+        public static Metadata FindAppInfo(string steam, GameProfile profile)
         {
-            var bytes = new List<byte>(); byte b;
-            while ((b = r.ReadByte()) != 0) { if (bytes.Count > 1048576) throw new InvalidDataException("Steam 字符串过长。"); bytes.Add(b); }
-            return Encoding.UTF8.GetString(bytes.ToArray());
+            if (System.String.IsNullOrEmpty(steam)) return null;
+            string cache = Path.Combine(steam, "appcache");
+            uint shard = AppInfoShard(profile.AppId);
+            string shardFile = Path.Combine(cache, "appinfo", "appinfo_" + shard.ToString("x2", CultureInfo.InvariantCulture) + ".vdf");
+            using (var r = OpenAppInfo(shardFile) ?? OpenAppInfo(Path.Combine(cache, "appinfo.vdf")))
+            {
+                if (r == null) return null;
+                uint magic = r.ReadUInt32(); r.ReadUInt32();
+                if (magic == 0x0756442a) return ReadShard(r, profile, shard);
+                if (magic == 0x07564429 || magic == 0x07564428 || magic == 0x07564427) return ReadLegacyAppInfo(r, profile, magic);
+                throw new InvalidDataException("暂不支持此 Steam 元数据版本，请更新工具。");
+            }
+        }
+        private static BinaryReader OpenAppInfo(string path)
+        {
+            try { return new BinaryReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete), Encoding.UTF8); }
+            catch (FileNotFoundException) { return null; }
+            catch (DirectoryNotFoundException) { return null; }
+        }
+        private static uint AppInfoShard(uint appId)
+        {
+            // Steam v42 uses the low byte of the MurmurHash3 fmix32 of the AppID.
+            unchecked
+            {
+                uint hash = (appId ^ (appId >> 16)) * 0x85ebca6bu;
+                hash = (hash ^ (hash >> 13)) * 0xc2b2ae35u;
+                return (hash ^ (hash >> 16)) & 0xff;
+            }
+        }
+        private static Metadata ReadShard(BinaryReader r, GameProfile profile, uint expectedShard)
+        {
+            var stream = r.BaseStream;
+            uint shard = r.ReadUInt32(), shardCount = r.ReadUInt32(), count = r.ReadUInt32(), indexSize = r.ReadUInt32();
+            int keyCount = r.ReadInt32();
+            uint keysSize = r.ReadUInt32(), dataSize = r.ReadUInt32();
+            r.ReadUInt64(); // Skip the final eight bytes of the v42 header.
+            long keysStart = stream.Position + indexSize, dataStart = keysStart + keysSize;
+            if (shard != expectedShard || shardCount != 256 || dataStart + dataSize > stream.Length)
+                throw new InvalidDataException("Steam 元数据分片头无效。");
+            for (uint i = 0; i < count; i++)
+            {
+                if (stream.Position + 16 > keysStart) throw new InvalidDataException("Steam 元数据分片索引不完整。");
+                uint id = r.ReadUInt32(), offset = r.ReadUInt32(), size = r.ReadUInt32(), infoSize = r.ReadUInt32();
+                long next = stream.Position + infoSize;
+                if (next > keysStart) throw new InvalidDataException("Steam 元数据分片索引无效。");
+                if (id == profile.AppId)
+                {
+                    if (size <= 20 || (long)offset + size > dataSize) throw new InvalidDataException("Steam 元数据分片记录无效。");
+                    stream.Position = keysStart;
+                    var keys = ReadKeys(r, keyCount, dataStart);
+                    long record = dataStart + offset;
+                    stream.Position = record + 20; // Each payload starts with a SHA-1 digest.
+                    return ReadMetadata(r, keys, record + size, profile);
+                }
+                stream.Position = next;
+            }
+            return null;
+        }
+        private static Metadata ReadLegacyAppInfo(BinaryReader r, GameProfile profile, uint magic)
+        {
+            var stream = r.BaseStream;
+            string[] keys = null;
+            long limit = stream.Length;
+            if (magic == 0x07564429)
+            {
+                long table = r.ReadInt64();
+                if (table < 16 || table >= stream.Length) throw new InvalidDataException("Steam 元数据字符串表无效。");
+                limit = table; stream.Position = table;
+                keys = ReadKeys(r, r.ReadInt32(), stream.Length);
+                stream.Position = 16;
+            }
+            int infoSize = magic == 0x07564427 ? 40 : 60;
+            while (stream.Position + 8 <= limit)
+            {
+                uint id = r.ReadUInt32(); if (id == 0) break;
+                uint size = r.ReadUInt32(); long next = stream.Position + size;
+                if (size < infoSize || next > limit) throw new InvalidDataException("Steam 元数据记录无效。");
+                if (id == profile.AppId)
+                {
+                    stream.Position += infoSize;
+                    return ReadMetadata(r, keys, next, profile);
+                }
+                stream.Position = next;
+            }
+            return null;
+        }
+        private static Metadata ReadMetadata(BinaryReader r, string[] keys, long end, GameProfile profile)
+        {
+            var info = Child(BinaryObject(r, keys, end, 0), "appinfo");
+            var config = Child(info, "config"); var depots = Child(info, "depots");
+            var m = new Metadata { Build = String(Child(Child(depots, "branches"), "public"), "buildid"), Executable = String(Child(Child(config, "launch"), "0"), "executable") };
+            uint build;
+            if (!UInt32.TryParse(m.Build, out build) || build == 0 || System.String.IsNullOrEmpty(m.Executable)) throw new InvalidDataException(profile.Name + "元数据缺少启动或公共版本信息。请在 Steam 打开游戏库页面后重试。");
+            m.Executable = profile.ValidateExecutable(m.Executable);
+            foreach (var depot in depots)
+            {
+                uint depotId; if (!UInt32.TryParse(depot.Key, out depotId)) continue;
+                string gid = String(Child(Child(depot.Value as Dictionary<string, object>, "manifests"), "public"), "gid");
+                ulong parsed; if (UInt64.TryParse(gid, out parsed) && parsed > 0) m.Depots[depot.Key] = gid;
+            }
+            if (m.Depots.Count == 0) throw new InvalidDataException("没有可用的公共 depot 元数据。");
+            return m;
+        }
+        private static string[] ReadKeys(BinaryReader r, int count, long end)
+        {
+            if (count < 0 || count > 2000000 || count > end - r.BaseStream.Position) throw new InvalidDataException("Steam 元数据字符串表无效。");
+            var keys = new string[count];
+            for (int i = 0; i < count; i++) keys[i] = CString(r, end);
+            return keys;
+        }
+        private static string CString(BinaryReader r, long end)
+        {
+            var bytes = new List<byte>();
+            while (r.BaseStream.Position < end)
+            {
+                byte b = r.ReadByte(); if (b == 0) return Encoding.UTF8.GetString(bytes.ToArray());
+                if (bytes.Count >= 1048576) throw new InvalidDataException("Steam 字符串过长。");
+                bytes.Add(b);
+            }
+            throw new InvalidDataException("Steam 元数据字符串不完整。");
         }
         private static Dictionary<string, object> BinaryObject(BinaryReader r, string[] keys, long end, int depth)
         {
@@ -186,12 +261,12 @@ namespace EndfieldSteamBridge
                 byte type = r.ReadByte(); if (type == 8) return result;
                 string key;
                 if (keys != null) { uint index = r.ReadUInt32(); if (index >= keys.Length) throw new InvalidDataException("Steam 字符串索引无效。"); key = keys[index]; }
-                else key = CString(r);
+                else key = CString(r, end);
                 object value;
                 switch (type)
                 {
                     case 0: value = BinaryObject(r, keys, end, depth + 1); break;
-                    case 1: value = CString(r); break;
+                    case 1: value = CString(r, end); break;
                     case 2: case 4: case 6: value = r.ReadUInt32(); break;
                     case 3: value = r.ReadSingle(); break;
                     case 7: case 10: value = r.ReadUInt64(); break;

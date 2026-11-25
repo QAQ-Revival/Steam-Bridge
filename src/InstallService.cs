@@ -199,7 +199,7 @@ namespace EndfieldSteamBridge
                     if (state.Phase != "enabled" || state.Executable != "steam-bridge.exe" || state.SteamId != account.SteamId || GameChannel.Get(state.ChannelId).Id != scan.ChannelId)
                         throw new InvalidOperationException(profile.Name + "：请先撤回未完成的载入，或撤回后再切换服务器。");
                 }
-                metadata.Add(profile.Id, KeyValues.ReadAppInfo(Path.Combine(steam, "appcache", "appinfo.vdf"), profile));
+                metadata.Add(profile.Id, KeyValues.ReadAppInfo(steam, profile));
                 owners.Add(profile.Id, account.SteamId);
                 if (owners.Values.Distinct().Count() != 1) throw new InvalidOperationException("Steam 账号在检测期间发生了切换，请重新检测。");
                 if (!File.Exists(profile.SteamLaunchSource(metadata[profile.Id].Executable, scan.Launcher, scan.Game)))

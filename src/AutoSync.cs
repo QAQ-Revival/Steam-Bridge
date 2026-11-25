@@ -87,7 +87,7 @@ namespace EndfieldSteamBridge
                     var config = App.Load<RuntimeConfig>(profile.ConfigPath);
                     if (config.AutoSync == false || !SameProfile(config, userData)) continue;
                     var state = App.Load<Installation>(profile.StatePath);
-                    var metadata = KeyValues.ReadAppInfo(Path.Combine(state.SteamRoot, "appcache", "appinfo.vdf"), profile);
+                    var metadata = KeyValues.ReadAppInfo(state.SteamRoot, profile);
                     var manifest = File.Exists(state.ManifestPath) ? KeyValues.Child(KeyValues.Parse(File.ReadAllText(state.ManifestPath)), "AppState") : null;
                     if (!NeedsSync(state, metadata, manifest)) continue;
                     // Keep exact saved choices. Do not import unsaved QAQR UI drafts or switch accounts.

@@ -46,7 +46,7 @@ namespace EndfieldSteamBridge
                 {
                     var scan = Detection.Scan(null, null, null, profile.Id);
                     Metadata metadata = null; string error = null;
-                    try { metadata = KeyValues.ReadAppInfo(Path.Combine(Detection.FindSteam(), "appcache", "appinfo.vdf"), profile); } catch (Exception e) { error = e.Message; }
+                    try { metadata = KeyValues.ReadAppInfo(Detection.FindSteam(), profile); } catch (Exception e) { error = e.Message; }
                     rows.Add(new { game = profile.Id, scan = scan, metadata = metadata, metadataError = error });
                 }
                 App.Save(args[1], rows); return 0;
@@ -63,6 +63,7 @@ namespace EndfieldSteamBridge
             Directory.CreateDirectory(root);
             try
             {
+                AppInfoTests(root);
                 ChannelTests(root);
                 AutoSyncTests();
                 MultiGameTests(root);
@@ -124,6 +125,68 @@ namespace EndfieldSteamBridge
                 string full = Path.GetFullPath(root);
                 if (full.StartsWith(Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory), StringComparison.OrdinalIgnoreCase) && Path.GetFileName(full).StartsWith("EndfieldBridge-tests-")) Directory.Delete(full, true);
             }
+        }
+        private static void WriteAppInfoObject(BinaryWriter w, Dictionary<string, object> obj, string[] keys)
+        {
+            foreach (var pair in obj)
+            {
+                var child = pair.Value as Dictionary<string, object>;
+                w.Write((byte)(child == null ? 1 : 0));
+                if (keys == null) w.Write(Encoding.UTF8.GetBytes(pair.Key + "\0"));
+                else w.Write(Array.IndexOf(keys, pair.Key));
+                if (child == null) w.Write(Encoding.UTF8.GetBytes((string)pair.Value + "\0"));
+                else WriteAppInfoObject(w, child, keys);
+            }
+            w.Write((byte)8);
+        }
+        private static byte[] AppInfoPayload(string build, string[] keys)
+        {
+            var obj = KeyValues.Parse("appinfo { config { launch { 0 { executable Endfield.exe } } } depots { branches { public { buildid " +
+                build + " } } 4732691 { manifests { public { gid 987 } } } } }");
+            using (var stream = new MemoryStream())
+            using (var w = new BinaryWriter(stream)) { WriteAppInfoObject(w, obj, keys); return stream.ToArray(); }
+        }
+        private static void AppInfoTests(string root)
+        {
+            var profile = GameProfile.Endfield;
+            string steam = Path.Combine(root, "steam-cache"), cache = Path.Combine(steam, "appcache");
+            Check(KeyValues.FindAppInfo(steam, profile) == null, "missing cache defers the optional launch-time check");
+            Throws(() => KeyValues.ReadAppInfo(steam, profile), "installation requires cached Steam metadata");
+            Directory.CreateDirectory(Path.Combine(cache, "appinfo"));
+            var keys = new[] { "appinfo", "config", "launch", "0", "executable", "depots", "branches", "public", "buildid", "4732691", "manifests", "gid" };
+            byte[] keyTable = Encoding.UTF8.GetBytes(String.Join("\0", keys) + "\0");
+            string legacy = Path.Combine(cache, "appinfo.vdf");
+            foreach (uint magic in new uint[] { 0x07564427, 0x07564428, 0x07564429 })
+            {
+                bool indexed = magic == 0x07564429;
+                byte[] payload = AppInfoPayload("100", indexed ? keys : null);
+                int infoSize = magic == 0x07564427 ? 40 : 60;
+                using (var w = new BinaryWriter(File.Create(legacy)))
+                {
+                    w.Write(magic); w.Write(1);
+                    if (indexed) w.Write(16L + 8 + infoSize + payload.Length + 4);
+                    w.Write(profile.AppId); w.Write(infoSize + payload.Length); w.Write(new byte[infoSize]); w.Write(payload); w.Write(0);
+                    if (indexed) { w.Write(keys.Length); w.Write(keyTable); }
+                }
+                Check(KeyValues.ReadAppInfo(steam, profile).Build == "100", "legacy appinfo format " + magic.ToString("x"));
+            }
+            // Steam routes Endfield to shard 0x25. The first index entry has extended info.
+            string shard = Path.Combine(cache, "appinfo", "appinfo_25.vdf");
+            byte[] current = AppInfoPayload("200", keys);
+            const int firstSize = 24, infoA = 68, infoB = 64;
+            using (var w = new BinaryWriter(File.Create(shard)))
+            {
+                w.Write(0x0756442a); w.Write(1); w.Write(0x25); w.Write(256); w.Write(2); w.Write(16 + infoA + 16 + infoB);
+                w.Write(keys.Length); w.Write(keyTable.Length); w.Write(firstSize + 20 + current.Length); w.Write(0L);
+                w.Write(208802); w.Write(0); w.Write(firstSize); w.Write(infoA); w.Write(new byte[infoA]);
+                w.Write(profile.AppId); w.Write(firstSize); w.Write(20 + current.Length); w.Write(infoB); w.Write(new byte[infoB]);
+                w.Write(keyTable); w.Write(new byte[firstSize]); w.Write(new byte[20]); w.Write(current);
+            }
+            var metadata = KeyValues.ReadAppInfo(steam, profile);
+            Check(metadata.Build == "200" && metadata.Executable == "Endfield.exe" && metadata.Depots["4732691"] == "987",
+                "v42 reads the indexed record and prefers its current metadata over the legacy file");
+            using (var file = File.OpenWrite(shard)) file.SetLength(file.Length - 1);
+            Throws(() => KeyValues.ReadAppInfo(steam, profile), "truncated shard is reported even when a legacy cache exists");
         }
         private static void AutoSyncTests()
         {

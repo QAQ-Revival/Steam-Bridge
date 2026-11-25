@@ -21,7 +21,8 @@ namespace EndfieldSteamBridge
         {
             if (config.AutoSync == false || !File.Exists(profile.StatePath)) return false;
             var state = App.Load<Installation>(profile.StatePath);
-            var metadata = KeyValues.ReadAppInfo(Path.Combine(state.SteamRoot, "appcache", "appinfo.vdf"), profile);
+            var metadata = KeyValues.FindAppInfo(state.SteamRoot, profile);
+            if (metadata == null) return false;
             var manifest = File.Exists(state.ManifestPath) ? KeyValues.Child(KeyValues.Parse(File.ReadAllText(state.ManifestPath)), "AppState") : null;
             return AutoSync.NeedsSync(state, metadata, manifest);
         }

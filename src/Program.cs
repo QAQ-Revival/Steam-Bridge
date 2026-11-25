@@ -61,7 +61,7 @@ namespace EndfieldSteamBridge
             {
                 if ((args.Length == 2 || args.Length == 3) && args[0] == "--probe") { App.Save(args[1], SteamAccount.Probe(Detection.FindSteam(), GameProfile.Get(args.Length == 3 ? args[2] : null))); return 0; }
                 if (args.Length >= 2 && args.Length <= 4 && args[0] == "--diagnose") { App.Save(args[1], Detection.Scan(null, null, args.Length >= 3 ? args[2] : null, args.Length == 4 ? args[3] : null)); return 0; }
-                if ((args.Length == 2 || args.Length == 3) && args[0] == "--metadata") { App.Save(args[1], KeyValues.ReadAppInfo(Path.Combine(Detection.FindSteam(), "appcache", "appinfo.vdf"), GameProfile.Get(args.Length == 3 ? args[2] : null))); return 0; }
+                if ((args.Length == 2 || args.Length == 3) && args[0] == "--metadata") { App.Save(args[1], KeyValues.ReadAppInfo(Detection.FindSteam(), GameProfile.Get(args.Length == 3 ? args[2] : null))); return 0; }
                 if ((args.Length == 1 || args.Length == 2) && args[0] == "--assist") return BridgeRuntime.RunAssist(args.Length == 2 ? args[1] : null);
                 // The original Steam command after -- is deliberately ignored. Never start a copied game-named EXE.
                 if (args.Length >= 2 && args[0] == "--bridge") return BridgeRuntime.Run(args[1]);
